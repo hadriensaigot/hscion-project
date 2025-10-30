@@ -9,26 +9,22 @@ import (
 	"sort"
 	"strings"
 
-
 	"github.com/scionproto/scion/pkg/daemon"
+	"github.com/scionproto/scion/pkg/experimental/fabrid"
 	"github.com/scionproto/scion/pkg/log"
 	"github.com/scionproto/scion/private/path/fabridquery"
-	"github.com/scionproto/scion/pkg/experimental/fabrid"
 
+	"github.com/scionproto/scion/pkg/drkey"
 	"github.com/scionproto/scion/pkg/private/serrors"
 	"github.com/scionproto/scion/pkg/snet"
-	"github.com/scionproto/scion/pkg/drkey"
 
 	"github.com/scionproto/scion/pkg/slayers/path/scion"
 	"github.com/scionproto/scion/pkg/snet/path"
 
 	pth "github.com/scionproto/scion/pkg/slayers/path"
 
-	
-
 	"gitlab.inf.ethz.ch/PRV-PERRIG/netsec-course/project-scion/lib"
 )
-
 
 // The local IP address of your endhost.
 // It matches the IP address of the SCION daemon you should use for this run.
@@ -60,107 +56,106 @@ func main() {
 	}
 }
 
-
-var dec scion.Decoded 
+var dec scion.Decoded
 var MyHopFields []pth.HopField
 
 func printDecodedPath(raw []byte) {
 
-    if err := dec.DecodeFromBytes(raw); err != nil {
-        fmt.Printf("Failed to decode path: %v\n", err)
-        return
-    }
+	if err := dec.DecodeFromBytes(raw); err != nil {
+		fmt.Printf("Failed to decode path: %v\n", err)
+		return
+	}
 
-    fmt.Println("Successfully decoded SCION path")
+	fmt.Println("Successfully decoded SCION path")
 
-    for i, info := range dec.InfoFields {
-        fmt.Printf("InfoField[%d]: ConsDir=%v, SegID=%x, Ts=%d\n",
-            i, info.ConsDir, info.SegID, info.Timestamp)
-    }
+	for i, info := range dec.InfoFields {
+		fmt.Printf("InfoField[%d]: ConsDir=%v, SegID=%x, Ts=%d\n",
+			i, info.ConsDir, info.SegID, info.Timestamp)
+	}
 
-	MyHopFields = dec.HopFields	
-    for i, hop := range dec.HopFields {
-        fmt.Printf("HopField[%d]: Ingress=%d → Egress=%d ExpTime=%d\n",
-            i, hop.ConsIngress, hop.ConsEgress, hop.ExpTime)
-    }
+	MyHopFields = dec.HopFields
+	for i, hop := range dec.HopFields {
+		fmt.Printf("HopField[%d]: Ingress=%d → Egress=%d ExpTime=%d\n",
+			i, hop.ConsIngress, hop.ConsEgress, hop.ExpTime)
+	}
 }
 
 type DebugReplyPather struct {
-    Base snet.ReplyPather
+	Base snet.ReplyPather
 }
 
 func (d DebugReplyPather) ReplyPath(rp snet.RawPath) (snet.DataplanePath, error) {
-    printDecodedPath(rp.Raw)
+	printDecodedPath(rp.Raw)
 
-    // Delegate to the underlying default builder
-    dp, err := d.Base.ReplyPath(rp)
-    if err != nil {
-        fmt.Printf("Error building reply path: %v\n", err)
-        return nil, err
-    }
-    return dp, nil
+	// Delegate to the underlying default builder
+	dp, err := d.Base.ReplyPath(rp)
+	if err != nil {
+		fmt.Printf("Error building reply path: %v\n", err)
+		return nil, err
+	}
+	return dp, nil
 }
 
 // matchReplyPath tries to identify which SCION path (from daemon) corresponds
 // to the decoded HopFields (reply path from verifier), assuming reverse traversal.
 // It prints and returns the ordered list of AS IAs.
 func matchReplyPath(paths []snet.Path, hops []pth.HopField) []string {
-    fmt.Println("\n=== Comparing decoded hopfields with known paths ===")
+	fmt.Println("\n=== Comparing decoded hopfields with known paths ===")
 
-    if len(hops) == 0 {
-        fmt.Println("No hopfields to compare.")
-        return nil
-    }
+	if len(hops) == 0 {
+		fmt.Println("No hopfields to compare.")
+		return nil
+	}
 
-    bestMatchIdx := -1
-    bestScore := -1
+	bestMatchIdx := -1
+	bestScore := -1
 
-    for idx, p := range paths {
-        md := p.Metadata()
-        ifaces := md.Interfaces
-        score := 0
+	for idx, p := range paths {
+		md := p.Metadata()
+		ifaces := md.Interfaces
+		score := 0
 
-        for i := 0; i < len(hops) && i < len(ifaces); i++ {
-            hf := hops[i]
-            iface := ifaces[len(ifaces)-1-i] // compare in reverse
+		for i := 0; i < len(hops) && i < len(ifaces); i++ {
+			hf := hops[i]
+			iface := ifaces[len(ifaces)-1-i] // compare in reverse
 
-            if uint16(iface.ID) == hf.ConsIngress || uint16(iface.ID) == hf.ConsEgress {
-                score++
-            }
-        }
+			if uint16(iface.ID) == hf.ConsIngress || uint16(iface.ID) == hf.ConsEgress {
+				score++
+			}
+		}
 
-        fmt.Printf("→ Path #%d scored %d/%d matching hopfields.\n", idx, score, len(hops))
+		fmt.Printf("→ Path #%d scored %d/%d matching hopfields.\n", idx, score, len(hops))
 
-        if score > bestScore {
-            bestScore = score
-            bestMatchIdx = idx
-        }
-    }
+		if score > bestScore {
+			bestScore = score
+			bestMatchIdx = idx
+		}
+	}
 
-    // Prepare output
-    if bestMatchIdx < 0 {
-        fmt.Println(" No matching path found for the decoded hopfields.")
-        return nil
-    }
+	// Prepare output
+	if bestMatchIdx < 0 {
+		fmt.Println(" No matching path found for the decoded hopfields.")
+		return nil
+	}
 
-    fmt.Printf("\nThe verifier's reply most likely corresponds to Path #%d (score=%d)\n", bestMatchIdx, bestScore)
+	fmt.Printf("\nThe verifier's reply most likely corresponds to Path #%d (score=%d)\n", bestMatchIdx, bestScore)
 
-    // Reverse traversal order (reply direction)
-    md := paths[bestMatchIdx].Metadata()
-    pathHops := md.Hops()
-    reversedAS := make([]string, 0, len(pathHops))
+	// Reverse traversal order (reply direction)
+	md := paths[bestMatchIdx].Metadata()
+	pathHops := md.Hops()
+	reversedAS := make([]string, 0, len(pathHops))
 
-    fmt.Println("Inferred AS traversal (reply path order):")
-    for i := len(pathHops) - 1; i >= 0; i-- {
-        fmt.Printf("  → %s (IngressIf=%d, EgressIf=%d)\n",
-            pathHops[i].IA, pathHops[i].IgIf, pathHops[i].EgIf)
-        reversedAS = append(reversedAS, pathHops[i].IA.String())
-    }
+	fmt.Println("Inferred AS traversal (reply path order):")
+	for i := len(pathHops) - 1; i >= 0; i-- {
+		fmt.Printf("  → %s (IngressIf=%d, EgressIf=%d)\n",
+			pathHops[i].IA, pathHops[i].IgIf, pathHops[i].EgIf)
+		reversedAS = append(reversedAS, pathHops[i].IA.String())
+	}
 
-    fmt.Printf("Ordered AS traversal list: %v\n", reversedAS)
-    fmt.Println("============================================\n")
+	fmt.Printf("Ordered AS traversal list: %v\n", reversedAS)
+	fmt.Println("============================================\n")
 
-    return reversedAS
+	return reversedAS
 }
 
 func realMain() error {
@@ -189,7 +184,7 @@ func realMain() error {
 	sn := snet.SCIONNetwork{Topology: sd}
 
 	localEP, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
-	
+
 	conn, _ := sn.Dial(ctx, "udp", localEP, &remoteEP)
 
 	defer conn.Close()
@@ -210,12 +205,12 @@ func realMain() error {
 
 	// 9. Read response (optional, but useful for debugging)
 	buf := make([]byte, 2048)
-	
+
 	n, err := conn.Read(buf)
 
 	if err == nil && n > 0 {
 		fmt.Printf("Verifier replied: %s\n", string(buf[:n]))
-	} 
+	}
 
 	sendWithPathInit := func(pathIndex int) (int, error) {
 		// 4. Choose the first available path
@@ -229,13 +224,12 @@ func realMain() error {
 		// 6. Create SCION network and dial verifier
 		sn := snet.SCIONNetwork{Topology: sd}
 
-
 		localEP, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
 
 		if err != nil {
-		return 0, fmt.Errorf("resolving local UDP address: %w", err)
+			return 0, fmt.Errorf("resolving local UDP address: %w", err)
 		}
-		
+
 		conn, err := sn.Dial(ctx, "udp", localEP, &remoteEP)
 
 		if err != nil {
@@ -264,7 +258,7 @@ func realMain() error {
 
 		// 9. Read response (optional, but useful for debugging)
 		buf := make([]byte, 2048)
-		
+
 		n, err := conn.Read(buf)
 
 		if err != nil {
@@ -295,12 +289,12 @@ func realMain() error {
 		return int(payloadInt), nil
 	}
 
-	var val int  // declare outside so it's visible everywhere
+	var val int // declare outside so it's visible everywhere
 
 	val, _ = sendWithPathInit(0)
 
 	for i := 1; i <= val; i++ {
-		if _ , err := sendWithPathInit(i); err == nil {
+		if _, err := sendWithPathInit(i); err == nil {
 			fmt.Printf("Path %d succeeded \n", i)
 		}
 	}
@@ -326,7 +320,6 @@ func realMain() error {
 			i, md.CarbonIntensity, missing)
 	}
 
-
 	// 1️⃣ Find the minimum value
 	minVal := missingPerPath[0]
 	for _, v := range missingPerPath {
@@ -349,9 +342,9 @@ func realMain() error {
 	fmt.Println("MissingPerPath:", missingPerPath)
 	fmt.Println("Min value:", minVal)
 	fmt.Println("Indicator:", indicator)
-	//smallestIdx is index of path to send over 
+	//smallestIdx is index of path to send over
 	//find the min and check all indices with this value
-	
+
 	tmpsum := int64(10000) // initial large number
 	bestIdx := -1          // to remember which path has the smallest sum
 
@@ -391,9 +384,8 @@ func realMain() error {
 		// 6. Create SCION network and dial verifier
 		sn := snet.SCIONNetwork{Topology: sd}
 
-
 		localEP, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
-		
+
 		conn, err := sn.Dial(ctx, "udp", localEP, &remoteEP)
 
 		if err != nil {
@@ -418,7 +410,7 @@ func realMain() error {
 
 		// 9. Read response (optional, but useful for debugging)
 		buf := make([]byte, 2048)
-		
+
 		n, err := conn.Read(buf)
 
 		if err == nil && n > 0 {
@@ -427,8 +419,7 @@ func realMain() error {
 
 		return 14, nil
 	}
-	_ , _ = sendWithPathInit2(bestIdx)
-
+	_, _ = sendWithPathInit2(bestIdx)
 
 	sendWithPathInit3 := func(pathIndex int) (int, error) {
 		// 4. Choose the first available path
@@ -442,13 +433,12 @@ func realMain() error {
 		// 6. Create SCION network and dial verifier
 		sn := snet.SCIONNetwork{Topology: sd}
 
-
 		localEP, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
 
 		if err != nil {
-		return 0, fmt.Errorf("resolving local UDP address: %w", err)
+			return 0, fmt.Errorf("resolving local UDP address: %w", err)
 		}
-		
+
 		conn, err := sn.Dial(ctx, "udp", localEP, &remoteEP)
 
 		if err != nil {
@@ -473,7 +463,7 @@ func realMain() error {
 
 		// 9. Read response (optional, but useful for debugging)
 		buf := make([]byte, 2048)
-		
+
 		n, err := conn.Read(buf)
 
 		if err == nil && n > 0 {
@@ -497,7 +487,7 @@ func realMain() error {
 	}
 
 	val, _ = sendWithPathInit3(1)
-	
+
 	zerosPerPathLatency := make([]int, len(paths))
 
 	for i, p := range paths {
@@ -571,7 +561,7 @@ func realMain() error {
 
 		if validPaths[i] == 1 { //valid
 			if latencySums[i] < int64(val) {
-					// compute bottleneck bandwidth for this path
+				// compute bottleneck bandwidth for this path
 				minBW := uint64(md.Bandwidth[0])
 				for _, bw := range md.Bandwidth {
 					if uint64(bw) < minBW {
@@ -585,10 +575,10 @@ func realMain() error {
 					bestIdx = i
 				}
 			}
-		} 
-		} 
+		}
+	}
 
-	containsOne := func (arr []int) bool {
+	containsOne := func(arr []int) bool {
 		for _, v := range arr {
 			if v == 1 {
 				return true
@@ -596,139 +586,139 @@ func realMain() error {
 		}
 		return false
 	}
-	
+
 	// no valid path here
 	if !containsOne(validPaths) {
-	candidateIndices := []int{}
+		candidateIndices := []int{}
 
-	// 1️⃣ Find the smallest number of missing latency values
-	minMissing := -1
-	for _, missing := range zerosPerPathLatency {
-		if minMissing == -1 || missing < minMissing {
-			minMissing = missing
-		}
-	}
-
-	// 2️⃣ Collect all paths that have this minimum missing count
-	for j, missing := range zerosPerPathLatency {
-		if missing == minMissing {
-			candidateIndices = append(candidateIndices, j)
-		}
-	}
-
-	fmt.Printf("Candidate paths (min latency zeros = %d): %v\n", minMissing, candidateIndices)
-
-	// 3️⃣ Compute min bandwidth per path for candidates
-	minBandPerPath := make([]uint64, len(paths))
-	for _, j := range candidateIndices {
-		md := paths[j].Metadata()
-		if len(md.Bandwidth) > 0 {
-		minBW := uint64(0)
-		for _, bw := range md.Bandwidth {
-			if bw == 0 {
-				continue // skip missing data
-			}
-			if minBW == 0 || uint64(bw) < minBW {
-				minBW = uint64(bw)
+		// 1️⃣ Find the smallest number of missing latency values
+		minMissing := -1
+		for _, missing := range zerosPerPathLatency {
+			if minMissing == -1 || missing < minMissing {
+				minMissing = missing
 			}
 		}
-		minBandPerPath[j] = minBW
-	} else {
-		minBandPerPath[j] = 0 // no data at all
-	}
-	}
-	fmt.Printf("Minimum bandwidth per path (candidates): %v\n", minBandPerPath)
 
-	// 4️⃣ Find max(minBW) among these candidates
-	maxBW := uint64(0)
-	for _, j := range candidateIndices {
-		if minBandPerPath[j] > maxBW {
-			maxBW = minBandPerPath[j]
-		}
-	}
-	fmt.Printf("Max bottleneck bandwidth among candidates: %d\n", maxBW)
-
-	// 5️⃣ Mark all paths that have this maxBW
-	bestBWFlags := make([]int, len(paths))
-	for _, j := range candidateIndices {
-		if minBandPerPath[j] == maxBW {
-			bestBWFlags[j] = 1
-		}
-	}
-	fmt.Printf("bestBWFlags: %v\n", bestBWFlags)
-
-	// 6️⃣ Compute shortest path length among those
-	minLen := -1
-	for i, flag := range bestBWFlags {
-		if flag == 1 {
-			md := paths[i].Metadata()
-			pathLen := len(md.Interfaces)
-			if minLen == -1 || pathLen < minLen {
-				minLen = pathLen
+		// 2️⃣ Collect all paths that have this minimum missing count
+		for j, missing := range zerosPerPathLatency {
+			if missing == minMissing {
+				candidateIndices = append(candidateIndices, j)
 			}
 		}
-	}
 
-	// Build shortestP array
-	shortestP := make([]int, len(paths))
-	for i, flag := range bestBWFlags {
-		if flag == 1 {
-			md := paths[i].Metadata()
-			pathLen := len(md.Interfaces)
-			if pathLen == minLen {
-				shortestP[i] = 1
+		fmt.Printf("Candidate paths (min latency zeros = %d): %v\n", minMissing, candidateIndices)
+
+		// 3️⃣ Compute min bandwidth per path for candidates
+		minBandPerPath := make([]uint64, len(paths))
+		for _, j := range candidateIndices {
+			md := paths[j].Metadata()
+			if len(md.Bandwidth) > 0 {
+				minBW := uint64(0)
+				for _, bw := range md.Bandwidth {
+					if bw == 0 {
+						continue // skip missing data
+					}
+					if minBW == 0 || uint64(bw) < minBW {
+						minBW = uint64(bw)
+					}
+				}
+				minBandPerPath[j] = minBW
+			} else {
+				minBandPerPath[j] = 0 // no data at all
 			}
 		}
-	}
-	fmt.Printf("Shortest path length among maxBW paths: %d\n", minLen)
-	fmt.Printf("shortestP: %v\n", shortestP)
+		fmt.Printf("Minimum bandwidth per path (candidates): %v\n", minBandPerPath)
 
-	// 7️⃣ Among those, pick lexicographically smallest by interface IDs
-	candidates := []int{}
-	for i, flag := range shortestP {
-		if flag == 1 {
-			candidates = append(candidates, i)
+		// 4️⃣ Find max(minBW) among these candidates
+		maxBW := uint64(0)
+		for _, j := range candidateIndices {
+			if minBandPerPath[j] > maxBW {
+				maxBW = minBandPerPath[j]
+			}
 		}
-	}
+		fmt.Printf("Max bottleneck bandwidth among candidates: %d\n", maxBW)
 
-	if len(candidates) == 0 {
-		return fmt.Errorf("no candidate paths found")
-	}
+		// 5️⃣ Mark all paths that have this maxBW
+		bestBWFlags := make([]int, len(paths))
+		for _, j := range candidateIndices {
+			if minBandPerPath[j] == maxBW {
+				bestBWFlags[j] = 1
+			}
+		}
+		fmt.Printf("bestBWFlags: %v\n", bestBWFlags)
 
-	// 8️⃣ If multiple candidates remain, sort them by length & interface IDs
-	if len(candidates) > 1 {
-		sort.Slice(candidates, func(a, b int) bool {
-			mi := paths[candidates[a]].Metadata()
-			mj := paths[candidates[b]].Metadata()
+		// 6️⃣ Compute shortest path length among those
+		minLen := -1
+		for i, flag := range bestBWFlags {
+			if flag == 1 {
+				md := paths[i].Metadata()
+				pathLen := len(md.Interfaces)
+				if minLen == -1 || pathLen < minLen {
+					minLen = pathLen
+				}
+			}
+		}
 
-			// 1️⃣ Shorter path first
-			if len(mi.Interfaces) != len(mj.Interfaces) {
+		// Build shortestP array
+		shortestP := make([]int, len(paths))
+		for i, flag := range bestBWFlags {
+			if flag == 1 {
+				md := paths[i].Metadata()
+				pathLen := len(md.Interfaces)
+				if pathLen == minLen {
+					shortestP[i] = 1
+				}
+			}
+		}
+		fmt.Printf("Shortest path length among maxBW paths: %d\n", minLen)
+		fmt.Printf("shortestP: %v\n", shortestP)
+
+		// 7️⃣ Among those, pick lexicographically smallest by interface IDs
+		candidates := []int{}
+		for i, flag := range shortestP {
+			if flag == 1 {
+				candidates = append(candidates, i)
+			}
+		}
+
+		if len(candidates) == 0 {
+			return fmt.Errorf("no candidate paths found")
+		}
+
+		// 8️⃣ If multiple candidates remain, sort them by length & interface IDs
+		if len(candidates) > 1 {
+			sort.Slice(candidates, func(a, b int) bool {
+				mi := paths[candidates[a]].Metadata()
+				mj := paths[candidates[b]].Metadata()
+
+				// 1️⃣ Shorter path first
+				if len(mi.Interfaces) != len(mj.Interfaces) {
+					return len(mi.Interfaces) < len(mj.Interfaces)
+				}
+
+				// 2️⃣ Compare hop-by-hop lexicographically
+				for k := 0; k < len(mi.Interfaces) && k < len(mj.Interfaces); k++ {
+					iai := mi.Interfaces[k].IA.String()
+					iaj := mj.Interfaces[k].IA.String()
+					if iai != iaj {
+						return iai < iaj
+					}
+
+					if mi.Interfaces[k].ID != mj.Interfaces[k].ID {
+						return mi.Interfaces[k].ID < mj.Interfaces[k].ID
+					}
+				}
+
+				// 3️⃣ All equal up to min length → shorter one wins
 				return len(mi.Interfaces) < len(mj.Interfaces)
-			}
+			})
 
-			// 2️⃣ Compare hop-by-hop lexicographically
-			for k := 0; k < len(mi.Interfaces) && k < len(mj.Interfaces); k++ {
-				iai := mi.Interfaces[k].IA.String()
-				iaj := mj.Interfaces[k].IA.String()
-				if iai != iaj {
-					return iai < iaj
-				}
+			fmt.Printf("Multiple shortest paths; lexicographically sorted, choosing #%d\n", candidates[0])
+			fmt.Println("Assuming missing bandwidth interfaces are not limiting (as per spec)")
+		}
 
-				if mi.Interfaces[k].ID != mj.Interfaces[k].ID {
-					return mi.Interfaces[k].ID < mj.Interfaces[k].ID
-				}
-			}
-
-			// 3️⃣ All equal up to min length → shorter one wins
-			return len(mi.Interfaces) < len(mj.Interfaces)
-		})
-
-		fmt.Printf("Multiple shortest paths; lexicographically sorted, choosing #%d\n", candidates[0])
-		fmt.Println("Assuming missing bandwidth interfaces are not limiting (as per spec)")
-	}
-
-	// ✅ Final selected path index
-	bestIdx = candidates[0]
+		// ✅ Final selected path index
+		bestIdx = candidates[0]
 	}
 
 	//selectedPath := paths[bestIdx]
@@ -740,7 +730,6 @@ func realMain() error {
 	if err2 == nil {
 		fmt.Printf("Path %d succeeded \n", bestIdx)
 	}
-
 
 	// 🛰️ Print all interfaces per path for debugging
 	fmt.Println("\nInterfaces per path:")
@@ -787,7 +776,6 @@ func realMain() error {
 			i, isPathEPIC(p), pathLen, hops)
 	}
 
-
 	// 4️. Separate EPIC and normal paths
 	var epicPaths, normalPaths []snet.Path
 	for _, p := range paths {
@@ -809,26 +797,26 @@ func realMain() error {
 	}
 
 	// 6️. Sort by path length, then by interface IDs
-	sort.Slice(candidates, 
+	sort.Slice(candidates,
 		func(i, j int) bool {
-		mi := candidates[i].Metadata()
-		mj := candidates[j].Metadata()
-		if len(mi.Interfaces) != len(mj.Interfaces) {
-			return len(mi.Interfaces) < len(mj.Interfaces)
-		}
-		for k := range mi.Interfaces {
-			if k >= len(mj.Interfaces) {
-				break
+			mi := candidates[i].Metadata()
+			mj := candidates[j].Metadata()
+			if len(mi.Interfaces) != len(mj.Interfaces) {
+				return len(mi.Interfaces) < len(mj.Interfaces)
 			}
-			if mi.Interfaces[k].IA.String() != mj.Interfaces[k].IA.String() {
-				return mi.Interfaces[k].IA.String() < mj.Interfaces[k].IA.String()
+			for k := range mi.Interfaces {
+				if k >= len(mj.Interfaces) {
+					break
+				}
+				if mi.Interfaces[k].IA.String() != mj.Interfaces[k].IA.String() {
+					return mi.Interfaces[k].IA.String() < mj.Interfaces[k].IA.String()
+				}
+				if mi.Interfaces[k].ID != mj.Interfaces[k].ID {
+					return mi.Interfaces[k].ID < mj.Interfaces[k].ID
+				}
 			}
-			if mi.Interfaces[k].ID != mj.Interfaces[k].ID {
-				return mi.Interfaces[k].ID < mj.Interfaces[k].ID
-			}
-		}
-		return false
-	})
+			return false
+		})
 
 	// 7️. Pick the best path (the first one in candidates after sorting)
 	best := candidates[0]
@@ -866,7 +854,7 @@ func realMain() error {
 	fmt.Printf("remoteEP.Path type: %T\n", remoteDP)
 
 	localEP, _ = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
-	
+
 	conn, _ = sn.Dial(ctx, "udp", localEP, &remoteEP)
 
 	defer conn.Close()
@@ -884,7 +872,7 @@ func realMain() error {
 	}
 
 	buf = make([]byte, 2048)
-	
+
 	n, err = conn.Read(buf)
 
 	if err == nil && n > 0 {
@@ -892,8 +880,6 @@ func realMain() error {
 	} else {
 		fmt.Println("No response received from verifier (check topology/logs if needed)")
 	}
-
-
 
 	if err != nil {
 		return fmt.Errorf("failed to connect to SCION daemon at %s: %w", daemonAddr, err)
@@ -947,25 +933,22 @@ func realMain() error {
 	hops := selectedPath.Metadata().Hops()
 
 	var (
-		selectedHops       []snet.HopInterface
-		selectedPolicyIDs  []*fabrid.PolicyID
+		selectedHops      []snet.HopInterface
+		selectedPolicyIDs []*fabrid.PolicyID
 	)
 	selectedHops = hops
 
-	
 	fmt.Println("==============================")
 	fmt.Println("=============DEBUG FOR HOST SRC AND DEST=================")
 	fmt.Printf("Local AS: %s\n", localIA)
 	fmt.Printf("Local Host: %s\n", local)
 	fmt.Printf("Remote AS : %d\n", remote.IA)
-    fmt.Printf("Remote Host: %s\n", remote.Host)
+	fmt.Printf("Remote Host: %s\n", remote.Host)
 	fmt.Printf("Remote Path : %d\n", remote.Path)
-    fmt.Printf("Remote NextHop: %s\n", remote.NextHop)
-	
+	fmt.Printf("Remote NextHop: %s\n", remote.NextHop)
 
 	// --- 6) Parse and evaluate the FABRID query ---
 	queryString := "{0-0#0,0@L1000 ? 0-0#0,0@L1000 : {0-0#0,0@L1001 ? 0-0#0,0@L1001 : {0-0#0,0@L1002 ? 0-0#0,0@L1002 : {0-0#0,0@L2000 ? 0-0#0,0@L2000 : 0-0#0,0@REJECT}}}}"
-
 
 	// Example: require policy L1000 on all hops
 	fq, err := fabridquery.ParseFabridQuery(queryString)
@@ -997,41 +980,41 @@ func realMain() error {
 	remoteEP.NextHop = selectedPath.UnderlayNextHop()
 
 	normalizeIPv6 := func(addr string) string {
-        s := strings.TrimSpace(addr)
+		s := strings.TrimSpace(addr)
 		if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
-			s = s[1:len(s)-1]
+			s = s[1 : len(s)-1]
 		}
 		return s
-    }
+	}
 
 	// --- Create the FABRID dataplane path ---
-	conf := &path.FabridConfig{} 
+	conf := &path.FabridConfig{}
 
 	fabridDP, err := path.NewFABRIDDataplanePath(
-    scionDP,
-    selectedHops,
-    selectedPolicyIDs,
-    conf,
-    func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
-        meta.SrcAS = localIA
-        meta.DstAS = remote.IA
+		scionDP,
+		selectedHops,
+		selectedPolicyIDs,
+		conf,
+		func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
+			meta.SrcAS = localIA
+			meta.DstAS = remote.IA
 
-        // ✅ FIXED: clean IPv6 brackets
-        meta.SrcHost = normalizeIPv6(local)
+			// ✅ FIXED: clean IPv6 brackets
+			meta.SrcHost = normalizeIPv6(local)
 
-        // ✅ DstHost: keep clean too
-        dst := remote.Host.IP.String()
-        meta.DstHost = &dst
+			// ✅ DstHost: keep clean too
+			dst := remote.Host.IP.String()
+			meta.DstHost = &dst
 
-        fmt.Printf("=== DRKey Meta Debug ===\n")
-        fmt.Printf("SrcAS: %s\n", meta.SrcAS)
-        fmt.Printf("DstAS: %s\n", meta.DstAS)
-        fmt.Printf("SrcHost: %s\n", meta.SrcHost)
-        fmt.Printf("DstHost: %s\n", *meta.DstHost)
-        fmt.Printf("PathASes: %v\n", meta.PathASes)
-        fmt.Println("========================")
-        return sd.FabridKeys(c, meta)
-    	},
+			fmt.Printf("=== DRKey Meta Debug ===\n")
+			fmt.Printf("SrcAS: %s\n", meta.SrcAS)
+			fmt.Printf("DstAS: %s\n", meta.DstAS)
+			fmt.Printf("SrcHost: %s\n", meta.SrcHost)
+			fmt.Printf("DstHost: %s\n", *meta.DstHost)
+			fmt.Printf("PathASes: %v\n", meta.PathASes)
+			fmt.Println("========================")
+			return sd.FabridKeys(c, meta)
+		},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to build FABRID dataplane path: %w", err)
@@ -1075,31 +1058,169 @@ func realMain() error {
 		fmt.Println("No response received from verifier.")
 	}
 
+	ctx = context.Background()
+
+	// 1. Connect to the local SCION daemon
+	daemonAddr = fmt.Sprintf("%s:%d", local, daemonPort)
+
+	sd, err = daemon.NewService(daemonAddr).Connect(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to connect to SCION daemon at %s: %w", daemonAddr, err)
+	}
+
+	// 2. Get local ISD-AS
+	localIA, err = sd.LocalIA(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to get local IA: %w", err)
+	}
+
+	paths, err = sd.Paths(ctx, remote.IA, localIA, daemon.PathReqFlags{})
+
+	if err != nil {
+		return fmt.Errorf("failed to get paths: %w", err)
+	}
+
+	selectedPath = paths[0]
+
+	// 3. Create SCION network and dial verifier
+	sn = snet.SCIONNetwork{
+		Topology:    sd,
+		ReplyPather: DebugReplyPather{Base: snet.DefaultReplyPather{}},
+	}
+
+	localEP, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
+
+	if err != nil {
+		return fmt.Errorf("resolving local UDP address: %w", err)
+	}
+
+	// 4. Build the remote endpoint (set path and next hop)
+	remoteEP = remote
+	remoteEP.Path = selectedPath.Dataplane()
+	remoteEP.NextHop = selectedPath.UnderlayNextHop()
+
+	conn, err = sn.Dial(ctx, "udp", localEP, &remoteEP)
+
+	if err != nil {
+		return fmt.Errorf("failed to dial verifier: %w", err)
+	}
+
+	defer conn.Close()
+
+	// 5. Build the JSON payload: {"ID":1,"Payload":{},"State":"TestRunning"}
+	msg = lib.TestResult{
+		ID:      40,
+		Payload: "",
+		State:   "TestRunning",
+	}
+
+	jsonBytes, err = json.Marshal(msg)
+
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	// 6. Send the JSON payload
+	if _, err = conn.Write(jsonBytes); err != nil {
+		return fmt.Errorf("failed to send payload: %w", err)
+	}
+
+	// 7. Read response (optional, but useful for debugging)
+	buf = make([]byte, 2048)
+
+	n, err = conn.Read(buf)
+
+	if err != nil {
+		return fmt.Errorf("failed to send JSON: %w", err)
+	}
+
+	if err == nil && n > 0 {
+		fmt.Printf("Verifier replied: %s\n", string(buf[:n]))
+	} else {
+		fmt.Println("No response received from verifier (check topology/logs if needed)")
+
+	}
+
+	for {
+		// Build the list of traversed ASes based on decoded HopFields
+		traversed := matchReplyPath(paths, MyHopFields)
+
+		// Build JSON payload to send back
+		msg := lib.TestResult{
+			ID:      40,
+			Payload: traversed,
+			State:   "TestRunning",
+		}
+
+		jsonBytes, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+
+		// Send JSON payload to verifier
+		if _, err := conn.Write(jsonBytes); err != nil {
+			return fmt.Errorf("failed to send payload: %w", err)
+		}
+
+		fmt.Printf("Sent payload with inferred path: %v\n", traversed)
+
+		// Wait for verifier's response
+		buf := make([]byte, 2048)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return fmt.Errorf("failed to read verifier response: %w", err)
+		}
+
+		if n == 0 {
+			fmt.Println("⚠️ No response from verifier, retrying...")
+			continue
+		}
+
+		// Decode verifier’s reply
+		var reply lib.TestResult
+		if err := json.Unmarshal(buf[:n], &reply); err != nil {
+			return fmt.Errorf("failed to unmarshal verifier reply: %w", err)
+		}
+
+		fmt.Printf("Verifier replied: %s\n", string(buf[:n]))
+
+		// Check verifier state
+		if strings.EqualFold(string(reply.State), "TestRunning") {
+			fmt.Println("Verifier still running test, sending next update...")
+			// Loop again — keep exchanging until state changes
+			continue
+		}
+
+		// Exit condition: verifier reports Success or another final state
+		fmt.Printf("Verifier finished with state: %s\n", reply.State)
+		break
+	}
+
 	daemonAddr = fmt.Sprintf("%s:%d", local, daemonPort)
 	sd, _ = daemon.NewService(daemonAddr).Connect(ctx)
 
 	localIA, _ = sd.LocalIA(ctx)
-	
+
 	paths, _ = sd.Paths(ctx, remote.IA, localIA, daemon.PathReqFlags{})
-	
+
 	// --- 6) Parse and evaluate the FABRID query ---
 	queryString = "{ 0-0#0,0@L1000 ? 0-0#0,0@L1000 : { 0-0#0,0@L1001 ? 0-0#0,0@L1001 : 0-0#0,0@REJECT } }"
 
 	type candidate struct {
-		path   snet.Path
-		hops   []snet.HopInterface
-		pids   []*fabrid.PolicyID
+		path snet.Path
+		hops []snet.HopInterface
+		pids []*fabrid.PolicyID
 	}
 
 	var matchedD []candidate
 
-	fabridexist := false	
+	fabridexist := false
 	fmt.Println("=== %d===", fabridexist)
 	var matchedPath []snet.Path
 
-
-
-	for idx, p := range paths {	
+	for idx, p := range paths {
 
 		selectedPath := p
 
@@ -1158,7 +1279,7 @@ func realMain() error {
 		fabridexist = false
 		fmt.Printf("%d", fabridexist)
 		fmt.Println("⚠️ No FABRID path matches the policy. Falling back to default.")
-			// 4. Choose a path
+		// 4. Choose a path
 		selectedPath := paths[0]
 
 		// Extract hop interfaces for FABRID query evaluation
@@ -1187,42 +1308,41 @@ func realMain() error {
 		}
 		selectedPolicyIDs = policyIDs
 
-
 		scionDP, _ := selectedPath.Dataplane().(path.SCION)
 
 		localEP, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
 		remoteEP := remote
 		remoteEP.NextHop = selectedPath.UnderlayNextHop()
 
-	// --- Create the FABRID dataplane path ---
-		conf := &path.FabridConfig{} 
+		// --- Create the FABRID dataplane path ---
+		conf := &path.FabridConfig{}
 
 		fabridDP, err := path.NewFABRIDDataplanePath(
-		scionDP,
-		selectedHops,
-		selectedPolicyIDs,
-		conf,
-		func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
-			meta.SrcAS = localIA
-			meta.DstAS = remote.IA
+			scionDP,
+			selectedHops,
+			selectedPolicyIDs,
+			conf,
+			func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
+				meta.SrcAS = localIA
+				meta.DstAS = remote.IA
 
-			// ✅ FIXED: clean IPv6 brackets
-			meta.SrcHost = normalizeIPv6(local)
+				// ✅ FIXED: clean IPv6 brackets
+				meta.SrcHost = normalizeIPv6(local)
 
-			// ✅ DstHost: keep clean too
-			dst := remote.Host.IP.String()
-			meta.DstHost = &dst
+				// ✅ DstHost: keep clean too
+				dst := remote.Host.IP.String()
+				meta.DstHost = &dst
 
-			fmt.Printf("=== DRKey Meta Debug ===\n")
-			fmt.Printf("SrcAS: %s\n", meta.SrcAS)
-			fmt.Printf("DstAS: %s\n", meta.DstAS)
-			fmt.Printf("SrcHost: %s\n", meta.SrcHost)
-			fmt.Printf("DstHost: %s\n", *meta.DstHost)
-			fmt.Printf("PathASes: %v\n", meta.PathASes)
-			fmt.Println("========================")
-			return sd.FabridKeys(c, meta)
-		},
-	)
+				fmt.Printf("=== DRKey Meta Debug ===\n")
+				fmt.Printf("SrcAS: %s\n", meta.SrcAS)
+				fmt.Printf("DstAS: %s\n", meta.DstAS)
+				fmt.Printf("SrcHost: %s\n", meta.SrcHost)
+				fmt.Printf("DstHost: %s\n", *meta.DstHost)
+				fmt.Printf("PathASes: %v\n", meta.PathASes)
+				fmt.Println("========================")
+				return sd.FabridKeys(c, meta)
+			},
+		)
 		if err != nil {
 			return fmt.Errorf("failed to build FABRID dataplane path: %w", err)
 		}
@@ -1268,7 +1388,7 @@ func realMain() error {
 	}
 
 	if len(matchedD) >= 1 {
-		fabridexist = true	
+		fabridexist = true
 		fmt.Printf(" %d", fabridexist)
 	}
 
@@ -1293,9 +1413,8 @@ func realMain() error {
 				return ma.Interfaces[k].ID < mb.Interfaces[k].ID
 			}
 		}
-			return len(ma.Interfaces) < len(mb.Interfaces)
-		})
-	
+		return len(ma.Interfaces) < len(mb.Interfaces)
+	})
 
 	// --- DEBUG PRINT ---
 	fmt.Println("=== SORTED MATCHED PATHS ===")
@@ -1319,7 +1438,7 @@ func realMain() error {
 		fmt.Println("------------------------------------------------------")
 	}
 
-	//SEND THE PACKET WITH THE BEST PATH	
+	//SEND THE PACKET WITH THE BEST PATH
 	best2 := matchedD[0]
 	selectedPath = best2.path
 	selectedHops = best2.hops
@@ -1329,7 +1448,7 @@ func realMain() error {
 	remoteEP = remote
 	remoteEP.NextHop = selectedPath.UnderlayNextHop()
 
-	conf = &path.FabridConfig{} 
+	conf = &path.FabridConfig{}
 
 	fabridDP, _ = path.NewFABRIDDataplanePath(
 		scionDP,
@@ -1393,20 +1512,18 @@ func realMain() error {
 	sd, _ = daemon.NewService(daemonAddr).Connect(ctx)
 
 	localIA, _ = sd.LocalIA(ctx)
-	
+
 	paths, _ = sd.Paths(ctx, remote.IA, localIA, daemon.PathReqFlags{})
-	
+
 	// --- 6) Parse and evaluate the FABRID query ---
 	queryString = "{0-0#0,0@L1000 ? 0-0#0,0@L1000 : {0-0#0,0@L1001 ? 0-0#0,0@L1001 : {0-0#0,0@L1002 ? 0-0#0,0@L1002 : {0-0#0,0@L2000 ? 0-0#0,0@L2000 : 0-0#0,0@REJECT}}}}"
 
+	var matchedD2 []candidate
 
-	var matchedD2 []candidate	
-
-	fabridexist = false	
+	fabridexist = false
 	fmt.Println("=== %d===", fabridexist)
 
-
-	for idx, p := range paths {	
+	for idx, p := range paths {
 
 		selectedPath := p
 
@@ -1445,7 +1562,7 @@ func realMain() error {
 		fabridexist = false
 		fmt.Printf("%d", fabridexist)
 		fmt.Println("⚠️ No FABRID path matches the policy. Falling back to default.")
-			// 4. Choose a path
+		// 4. Choose a path
 		selectedPath := paths[0]
 
 		// Extract hop interfaces for FABRID query evaluation
@@ -1474,42 +1591,41 @@ func realMain() error {
 		}
 		selectedPolicyIDs = policyIDs
 
-
 		scionDP, _ := selectedPath.Dataplane().(path.SCION)
 
 		localEP, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
 		remoteEP := remote
 		remoteEP.NextHop = selectedPath.UnderlayNextHop()
 
-	// --- Create the FABRID dataplane path ---
-		conf := &path.FabridConfig{} 
+		// --- Create the FABRID dataplane path ---
+		conf := &path.FabridConfig{}
 
 		fabridDP, err := path.NewFABRIDDataplanePath(
-		scionDP,
-		selectedHops,
-		selectedPolicyIDs,
-		conf,
-		func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
-			meta.SrcAS = localIA
-			meta.DstAS = remote.IA
+			scionDP,
+			selectedHops,
+			selectedPolicyIDs,
+			conf,
+			func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
+				meta.SrcAS = localIA
+				meta.DstAS = remote.IA
 
-			// ✅ FIXED: clean IPv6 brackets
-			meta.SrcHost = normalizeIPv6(local)
+				// ✅ FIXED: clean IPv6 brackets
+				meta.SrcHost = normalizeIPv6(local)
 
-			// ✅ DstHost: keep clean too
-			dst := remote.Host.IP.String()
-			meta.DstHost = &dst
+				// ✅ DstHost: keep clean too
+				dst := remote.Host.IP.String()
+				meta.DstHost = &dst
 
-			fmt.Printf("=== DRKey Meta Debug ===\n")
-			fmt.Printf("SrcAS: %s\n", meta.SrcAS)
-			fmt.Printf("DstAS: %s\n", meta.DstAS)
-			fmt.Printf("SrcHost: %s\n", meta.SrcHost)
-			fmt.Printf("DstHost: %s\n", *meta.DstHost)
-			fmt.Printf("PathASes: %v\n", meta.PathASes)
-			fmt.Println("========================")
-			return sd.FabridKeys(c, meta)
-		},
-	)
+				fmt.Printf("=== DRKey Meta Debug ===\n")
+				fmt.Printf("SrcAS: %s\n", meta.SrcAS)
+				fmt.Printf("DstAS: %s\n", meta.DstAS)
+				fmt.Printf("SrcHost: %s\n", meta.SrcHost)
+				fmt.Printf("DstHost: %s\n", *meta.DstHost)
+				fmt.Printf("PathASes: %v\n", meta.PathASes)
+				fmt.Println("========================")
+				return sd.FabridKeys(c, meta)
+			},
+		)
 		if err != nil {
 			return fmt.Errorf("failed to build FABRID dataplane path: %w", err)
 		}
@@ -1556,81 +1672,81 @@ func realMain() error {
 
 	if len(matchedD) >= 1 {
 		for _, cand := range matchedD {
-		hops := cand.hops
+			hops := cand.hops
 
-		// Track whether we saw any hop in ISD 1 / ISD 2
-		sawISD1 := false
-		sawISD2 := false
+			// Track whether we saw any hop in ISD 1 / ISD 2
+			sawISD1 := false
+			sawISD2 := false
 
-		// ISD1: all hops must have L1000
-		isd1AllL1000 := true
+			// ISD1: all hops must have L1000
+			isd1AllL1000 := true
 
-		// ISD2: either all L1001 or all L1002
-		isd2AllL1001 := true
-		isd2AllL1002 := true
+			// ISD2: either all L1001 or all L1002
+			isd2AllL1001 := true
+			isd2AllL1002 := true
 
-		for i, hop := range hops {
-			// Extract ISD number safely from IA string: "1-ff00:0:113" -> "1"
-			iaStr := hop.IA.String()
-			dash := strings.IndexByte(iaStr, '-')
-			if dash < 0 {
-				// If IA formatting is unexpected, reject this candidate
-				fmt.Printf("Path rejected: hop %d has malformed IA: %q\n", i, iaStr)
-				isd1AllL1000, isd2AllL1001, isd2AllL1002 = false, false, false
-				break
-			}
-			isdStr := iaStr[:dash]
+			for i, hop := range hops {
+				// Extract ISD number safely from IA string: "1-ff00:0:113" -> "1"
+				iaStr := hop.IA.String()
+				dash := strings.IndexByte(iaStr, '-')
+				if dash < 0 {
+					// If IA formatting is unexpected, reject this candidate
+					fmt.Printf("Path rejected: hop %d has malformed IA: %q\n", i, iaStr)
+					isd1AllL1000, isd2AllL1001, isd2AllL1002 = false, false, false
+					break
+				}
+				isdStr := iaStr[:dash]
 
-			// Helper: does this hop advertise a given local policy?
-			has := func(id uint32) bool {
-				for _, pol := range hop.Policies {
-					if pol.Identifier == id {
-						return true
+				// Helper: does this hop advertise a given local policy?
+				has := func(id uint32) bool {
+					for _, pol := range hop.Policies {
+						if pol.Identifier == id {
+							return true
+						}
 					}
+					return false
 				}
-				return false
+
+				switch isdStr {
+				case "1":
+					sawISD1 = true
+					if !has(1000) {
+						isd1AllL1000 = false
+						// keep scanning to finish diagnostics, or break early if you prefer
+					}
+				case "2":
+					sawISD2 = true
+					// For ISD2, keep both possibilities alive until disproved
+					if !has(1001) {
+						isd2AllL1001 = false
+					}
+					if !has(1002) {
+						isd2AllL1002 = false
+					}
+				default:
+					// Other ISDs are unconstrained by this rule; ignore them
+				}
 			}
 
-			switch isdStr {
-			case "1":
-				sawISD1 = true
-				if !has(1000) {
-					isd1AllL1000 = false
-					// keep scanning to finish diagnostics, or break early if you prefer
-				}
-			case "2":
-				sawISD2 = true
-				// For ISD2, keep both possibilities alive until disproved
-				if !has(1001) {
-					isd2AllL1001 = false
-				}
-				if !has(1002) {
-					isd2AllL1002 = false
-				}
-			default:
-				// Other ISDs are unconstrained by this rule; ignore them
-			}
-		}
+			// Apply the "if only one ISD is traversed, the other rule doesn't matter" clause
+			isISD1OK := !sawISD1 || isd1AllL1000
+			isISD2OK := !sawISD2 || (isd2AllL1001 || isd2AllL1002)
 
-		// Apply the "if only one ISD is traversed, the other rule doesn't matter" clause
-		isISD1OK := !sawISD1 || isd1AllL1000
-		isISD2OK := !sawISD2 || (isd2AllL1001 || isd2AllL1002)
-
-		if isISD1OK && isISD2OK {
-			fabridexist = true
-			fmt.Printf(" %d", fabridexist)
-			matchedD2 = append(matchedD2, cand)
-			matchedPath2 = append(matchedPath2, cand.path)
-			fmt.Printf("Path accepted (ISD1 all L1000; ISD2 all L1001 or all L1002): %d hops\n", len(hops))
-		} else {
-			// Optional debugging
-			if sawISD1 && !isd1AllL1000 {
-				fmt.Println("Path rejected: ISD 1 does not have L1000 on all hops")
+			if isISD1OK && isISD2OK {
+				fabridexist = true
+				fmt.Printf(" %d", fabridexist)
+				matchedD2 = append(matchedD2, cand)
+				matchedPath2 = append(matchedPath2, cand.path)
+				fmt.Printf("Path accepted (ISD1 all L1000; ISD2 all L1001 or all L1002): %d hops\n", len(hops))
+			} else {
+				// Optional debugging
+				if sawISD1 && !isd1AllL1000 {
+					fmt.Println("Path rejected: ISD 1 does not have L1000 on all hops")
+				}
+				if sawISD2 && !(isd2AllL1001 || isd2AllL1002) {
+					fmt.Println("Path rejected: ISD 2 is not uniformly L1001 or uniformly L1002")
+				}
 			}
-			if sawISD2 && !(isd2AllL1001 || isd2AllL1002) {
-				fmt.Println("Path rejected: ISD 2 is not uniformly L1001 or uniformly L1002")
-			}
-		}
 		}
 		// Debug summary
 		fmt.Printf("=== Filtered paths (ISD1=L1000, ISD2=all L1001 OR all L1002): %d/%d ===\n", len(matchedD2), len(matchedD))
@@ -1665,9 +1781,8 @@ func realMain() error {
 				return ma.Interfaces[k].ID < mb.Interfaces[k].ID
 			}
 		}
-			return len(ma.Interfaces) < len(mb.Interfaces)
-		})
-	
+		return len(ma.Interfaces) < len(mb.Interfaces)
+	})
 
 	// --- DEBUG PRINT ---
 	fmt.Println("=== SORTED MATCHED PATHS ===")
@@ -1691,7 +1806,7 @@ func realMain() error {
 		fmt.Println("------------------------------------------------------")
 	}
 
-	//SEND THE PACKET WITH THE BEST PATH	
+	//SEND THE PACKET WITH THE BEST PATH
 	best3 := matchedD2[0]
 	selectedPath = best3.path
 	selectedHops = best3.hops
@@ -1701,7 +1816,7 @@ func realMain() error {
 	remoteEP = remote
 	remoteEP.NextHop = selectedPath.UnderlayNextHop()
 
-	conf = &path.FabridConfig{} 
+	conf = &path.FabridConfig{}
 
 	fabridDP, _ = path.NewFABRIDDataplanePath(
 		scionDP,
@@ -1759,14 +1874,13 @@ func realMain() error {
 		fmt.Printf("Verifier replied: %s\n", string(buf[:n]))
 	}
 
-	
 	// --- 6) Parse and evaluate the FABRID query ---
 	queryString = "{0-0#0,0@L1000 ? 0-0#0,0@L1000 : {0-0#0,0@L1001 ? 0-0#0,0@L1001 : {0-0#0,0@L1002 ? 0-0#0,0@L1002 : {0-0#0,0@L2000 ? 0-0#0,0@L2000 : 0-0#0,0@REJECT}}}}"
 
-	fabridexist = false	
+	fabridexist = false
 	fmt.Println("=== %d===", fabridexist)
 
-	for idx, p := range paths {	
+	for idx, p := range paths {
 
 		selectedPath := p
 
@@ -1802,14 +1916,14 @@ func realMain() error {
 	}
 
 	// Evaluate query over hops
-	var matchedD3 []candidate	
+	var matchedD3 []candidate
 	var matchedPath3 []snet.Path
 
 	if len(matchedD) == 0 {
 		fabridexist = false
 		fmt.Printf("%d", fabridexist)
 		fmt.Println("⚠️ No FABRID path matches the policy. Falling back to default.")
-			// 4. Choose a path
+		// 4. Choose a path
 		selectedPath := paths[0]
 
 		// Extract hop interfaces for FABRID query evaluation
@@ -1825,8 +1939,6 @@ func realMain() error {
 		var ml fabridquery.MatchList
 		ml.SelectedPolicies = make([]*fabridquery.Policy, len(hops))
 
-		
-
 		matched, mlPtr := fq.Evaluate(hops, &ml)
 		if !matched {
 			return fmt.Errorf("FABRID query matched no policies")
@@ -1839,42 +1951,41 @@ func realMain() error {
 		}
 		selectedPolicyIDs = policyIDs
 
-
 		scionDP, _ = selectedPath.Dataplane().(path.SCION)
 
 		localEP, _ = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
 		remoteEP = remote
 		remoteEP.NextHop = selectedPath.UnderlayNextHop()
 
-	// --- Create the FABRID dataplane path ---
-		conf = &path.FabridConfig{} 
+		// --- Create the FABRID dataplane path ---
+		conf = &path.FabridConfig{}
 
 		fabridDP, err = path.NewFABRIDDataplanePath(
-		scionDP,
-		selectedHops,
-		selectedPolicyIDs,
-		conf,
-		func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
-			meta.SrcAS = localIA
-			meta.DstAS = remote.IA
+			scionDP,
+			selectedHops,
+			selectedPolicyIDs,
+			conf,
+			func(c context.Context, meta drkey.FabridKeysMeta) (drkey.FabridKeysResponse, error) {
+				meta.SrcAS = localIA
+				meta.DstAS = remote.IA
 
-			// ✅ FIXED: clean IPv6 brackets
-			meta.SrcHost = normalizeIPv6(local)
+				// ✅ FIXED: clean IPv6 brackets
+				meta.SrcHost = normalizeIPv6(local)
 
-			// ✅ DstHost: keep clean too
-			dst := remote.Host.IP.String()
-			meta.DstHost = &dst
+				// ✅ DstHost: keep clean too
+				dst := remote.Host.IP.String()
+				meta.DstHost = &dst
 
-			fmt.Printf("=== DRKey Meta Debug ===\n")
-			fmt.Printf("SrcAS: %s\n", meta.SrcAS)
-			fmt.Printf("DstAS: %s\n", meta.DstAS)
-			fmt.Printf("SrcHost: %s\n", meta.SrcHost)
-			fmt.Printf("DstHost: %s\n", *meta.DstHost)
-			fmt.Printf("PathASes: %v\n", meta.PathASes)
-			fmt.Println("========================")
-			return sd.FabridKeys(c, meta)
-		},
-	)
+				fmt.Printf("=== DRKey Meta Debug ===\n")
+				fmt.Printf("SrcAS: %s\n", meta.SrcAS)
+				fmt.Printf("DstAS: %s\n", meta.DstAS)
+				fmt.Printf("SrcHost: %s\n", meta.SrcHost)
+				fmt.Printf("DstHost: %s\n", *meta.DstHost)
+				fmt.Printf("PathASes: %v\n", meta.PathASes)
+				fmt.Println("========================")
+				return sd.FabridKeys(c, meta)
+			},
+		)
 		if err != nil {
 			return fmt.Errorf("failed to build FABRID dataplane path: %w", err)
 		}
@@ -1920,72 +2031,72 @@ func realMain() error {
 	}
 
 	if len(matchedD) >= 1 {
-		fabridexist = true	
+		fabridexist = true
 		fmt.Printf(" %d", fabridexist)
 
-	for _, cand := range matchedD {
-		hops := cand.hops
-		if len(hops) < 2 {
-			// If there's no penultimate hop (e.g., 1-hop path), skip it
-			continue
-		}
-
-		penultimate := hops[len(hops)-2]
-		hasPenultimateL2000 := false
-
-		// --- Check penultimate hop ---
-		for _, pol := range penultimate.Policies {
-			if pol.Identifier == 2000 {
-				hasPenultimateL2000 = true
-				break
-			}
-		}
-
-		if !hasPenultimateL2000 {
-			fmt.Printf("Path rejected: penultimate hop (%s) missing L2000\n", penultimate.IA)
-			continue
-		}
-
-		// --- Check all other hops ---
-		valid := true
-		for i, hop := range hops {
-			if i == len(hops)-2 {
-				continue // already checked penultimate hop
+		for _, cand := range matchedD {
+			hops := cand.hops
+			if len(hops) < 2 {
+				// If there's no penultimate hop (e.g., 1-hop path), skip it
+				continue
 			}
 
-			hasL2000 := false
-			hasL1002 := false
+			penultimate := hops[len(hops)-2]
+			hasPenultimateL2000 := false
 
-			for _, pol := range hop.Policies {
+			// --- Check penultimate hop ---
+			for _, pol := range penultimate.Policies {
 				if pol.Identifier == 2000 {
-					hasL2000 = true
-				}
-				if pol.Identifier == 1002 {
-					hasL1002 = true
+					hasPenultimateL2000 = true
+					break
 				}
 			}
 
-			if !hasL2000 && !hasL1002 {
-				fmt.Printf("Path rejected: hop %d (%s) missing both L2000 and L1002\n", i, hop.IA)
-				valid = false
-				break
+			if !hasPenultimateL2000 {
+				fmt.Printf("Path rejected: penultimate hop (%s) missing L2000\n", penultimate.IA)
+				continue
 			}
-		}
+
+			// --- Check all other hops ---
+			valid := true
+			for i, hop := range hops {
+				if i == len(hops)-2 {
+					continue // already checked penultimate hop
+				}
+
+				hasL2000 := false
+				hasL1002 := false
+
+				for _, pol := range hop.Policies {
+					if pol.Identifier == 2000 {
+						hasL2000 = true
+					}
+					if pol.Identifier == 1002 {
+						hasL1002 = true
+					}
+				}
+
+				if !hasL2000 && !hasL1002 {
+					fmt.Printf("Path rejected: hop %d (%s) missing both L2000 and L1002\n", i, hop.IA)
+					valid = false
+					break
+				}
+			}
 
 			if valid {
 				fabridexist = true
 				matchedD3 = append(matchedD3, cand)
 				matchedPath3 = append(matchedPath3, cand.path)
 				fmt.Printf("Path accepted: penultimate has L2000, and all other hops have L2000 or L1002 (%d hops)\n", len(hops))
-		}
+			}
 		}
 
-			// Debug summary
-			for i, cand := range matchedD3 {
-				fmt.Printf("  → Path #%d with %d hops (penultimate=%s)\n", i, len(cand.hops), cand.hops[len(cand.hops)-2].IA)
-			}
-			fmt.Println("=============================================")
+		// Debug summary
+		for i, cand := range matchedD3 {
+			fmt.Printf("  → Path #%d with %d hops (penultimate=%s)\n", i, len(cand.hops), cand.hops[len(cand.hops)-2].IA)
 		}
+		fmt.Println("=============================================")
+	}
 
 	fmt.Printf("%d", fabridexist)
 
@@ -2008,9 +2119,8 @@ func realMain() error {
 				return ma.Interfaces[k].ID < mb.Interfaces[k].ID
 			}
 		}
-			return len(ma.Interfaces) < len(mb.Interfaces)
-		})
-	
+		return len(ma.Interfaces) < len(mb.Interfaces)
+	})
 
 	// --- DEBUG PRINT ---
 	fmt.Println("=== SORTED MATCHED PATHS ===")
@@ -2034,7 +2144,7 @@ func realMain() error {
 		fmt.Println("------------------------------------------------------")
 	}
 
-	//SEND THE PACKET WITH THE BEST PATH	
+	//SEND THE PACKET WITH THE BEST PATH
 	best4 := matchedD3[0]
 	selectedPath = best4.path
 	selectedHops = best4.hops
@@ -2102,152 +2212,5 @@ func realMain() error {
 		fmt.Printf("Verifier replied: %s\n", string(buf[:n]))
 	}
 
-	ctx = context.Background()
-
-	// 1. Connect to the local SCION daemon
-	daemonAddr = fmt.Sprintf("%s:%d", local, daemonPort)
-
-	sd, err = daemon.NewService(daemonAddr).Connect(ctx)
-
-	if err != nil {
-		return fmt.Errorf("failed to connect to SCION daemon at %s: %w", daemonAddr, err)
-	}
-
-	// 2. Get local ISD-AS
-	localIA, err = sd.LocalIA(ctx)
-
-	if err != nil {
-		return fmt.Errorf("failed to get local IA: %w", err)
-	}
-
-	paths, err = sd.Paths(ctx, remote.IA, localIA, daemon.PathReqFlags{})
-
-	if err != nil {
-		return fmt.Errorf("failed to get paths: %w", err)
-	}
-
-	selectedPath = paths[0]
-
-	// 3. Create SCION network and dial verifier
-	sn = snet.SCIONNetwork{
-    Topology:    sd,
-    ReplyPather: DebugReplyPather{Base: snet.DefaultReplyPather{}},
-	}
-
-	localEP, err = net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", local))
-
-	if err != nil {
-		return fmt.Errorf("resolving local UDP address: %w", err)
-	}
-
-	// 4. Build the remote endpoint (set path and next hop)
-	remoteEP = remote
-	remoteEP.Path = selectedPath.Dataplane()
-	remoteEP.NextHop = selectedPath.UnderlayNextHop()
-	
-	conn, err = sn.Dial(ctx, "udp", localEP, &remoteEP)
-
-	if err != nil {
-		return fmt.Errorf("failed to dial verifier: %w", err)
-	}
-
-	defer conn.Close()	
-
-	// 5. Build the JSON payload: {"ID":1,"Payload":{},"State":"TestRunning"}
-	msg = lib.TestResult{
-		ID:      40,
-		Payload: "",
-		State:   "TestRunning",
-	}
-
-	jsonBytes, err = json.Marshal(msg)
-
-	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %w", err)
-	}
-
-	// 6. Send the JSON payload
-	if _, err = conn.Write(jsonBytes); err != nil {
-		return fmt.Errorf("failed to send payload: %w", err)
-	}
-
-	// 7. Read response (optional, but useful for debugging)
-	buf = make([]byte, 2048)
-	
-	n, err = conn.Read(buf)
-
-	if err != nil {
-		return fmt.Errorf("failed to send JSON: %w", err)
-	}
-
-	if err == nil && n > 0 {
-		fmt.Printf("Verifier replied: %s\n", string(buf[:n]))
-	} else {
-		fmt.Println("No response received from verifier (check topology/logs if needed)")
-		
-	}
-
-	for {
-    // Build the list of traversed ASes based on decoded HopFields
-    traversed := matchReplyPath(paths, MyHopFields)
-
-    // Build JSON payload to send back
-    msg := lib.TestResult{
-        ID:      40,
-        Payload: traversed,
-        State:   "TestRunning",
-    }
-
-    jsonBytes, err := json.Marshal(msg)
-    if err != nil {
-        return fmt.Errorf("failed to marshal JSON: %w", err)
-    }
-
-    // Send JSON payload to verifier
-    if _, err := conn.Write(jsonBytes); err != nil {
-        return fmt.Errorf("failed to send payload: %w", err)
-    }
-
-    fmt.Printf("Sent payload with inferred path: %v\n", traversed)
-
-    // Wait for verifier's response
-    buf := make([]byte, 2048)
-    n, err := conn.Read(buf)
-    if err != nil {
-        return fmt.Errorf("failed to read verifier response: %w", err)
-    }
-
-    if n == 0 {
-        fmt.Println("⚠️ No response from verifier, retrying...")
-        continue
-    }
-
-    // Decode verifier’s reply
-    var reply lib.TestResult
-    if err := json.Unmarshal(buf[:n], &reply); err != nil {
-        return fmt.Errorf("failed to unmarshal verifier reply: %w", err)
-    }
-
-    fmt.Printf("Verifier replied: %s\n", string(buf[:n]))
-
-    // Check verifier state
-    if strings.EqualFold(string(reply.State), "TestRunning") {
-        fmt.Println("Verifier still running test, sending next update...")
-        // Loop again — keep exchanging until state changes
-        continue
-    }
-
-    // Exit condition: verifier reports Success or another final state
-    fmt.Printf("Verifier finished with state: %s\n", reply.State)
-    break
-	}
 	return nil
 }
-
-
-
-	
-
-
-
-    
